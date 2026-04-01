@@ -1,0 +1,16 @@
+face_recognition==1.3.0
+mediapipe==0.10.9
+scikit-learn==1.4.0
+numpy>=1.24.3
+scipy>=1.11.4
+opencv-python==4.9.0.80
+streamlit==1.32.0
+plotly==5.20.0
+pandas==2.2.0
+joblib==1.3.2
+Pillow==10.1.0
+tensorflow==2.15.0
+# Note: dlib and cmake are required for face_recognition
+# Install with: pip install cmake dlib before installing requirements.txt
+# For TensorFlow GPU on best-performance Windows setups, use WSL2/Linux and install:
+#   pip install "tensorflow[and-cuda]"
