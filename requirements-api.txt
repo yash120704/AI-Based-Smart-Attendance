@@ -4,7 +4,6 @@ psycopg2-binary==2.9.9
 cloudinary==1.39.0
 requests==2.31.0
 dlib-bin==19.24.2
-face-recognition-models==0.3.0
 Click==8.1.7
 mediapipe==0.10.9
 scikit-learn==1.4.0

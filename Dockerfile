@@ -3,7 +3,7 @@ FROM python:3.11-slim-bookworm
 ENV CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
 
 RUN apt-get update && apt-get install -y \
-    cmake build-essential libopenblas-dev \
+    git cmake build-essential libopenblas-dev \
     liblapack-dev libx11-dev libgtk-3-dev \
     ffmpeg libsm6 libxext6 \
     && rm -rf /var/lib/apt/lists/*
@@ -13,8 +13,9 @@ COPY requirements-api.txt .
 RUN python -m pip install --upgrade pip setuptools wheel \
     && pip install --no-cache-dir "cmake<4" \
     && pip install --no-cache-dir -r requirements-api.txt \
-    && pip install --no-cache-dir --no-deps face_recognition==1.3.0 \
-    && python -c "import dlib, face_recognition; print('face_recognition import ok')"
+    && pip install --no-cache-dir git+https://github.com/ageitgey/face_recognition_models \
+    && pip install --no-cache-dir --no-deps face_recognition==1.3.0
 
 COPY . .
+RUN python -c "import dlib, face_recognition_models; print(face_recognition_models.face_recognition_model_location()); import face_recognition; print('face_recognition import ok')"
 CMD uvicorn api.main_api:app --host 0.0.0.0 --port ${PORT:-8000}

@@ -1,6 +1,7 @@
 .git
 .gitignore
 .npm-cache
+.venv
 __pycache__
 *.pyc
 *.pyo
