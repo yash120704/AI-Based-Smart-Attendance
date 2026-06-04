@@ -169,10 +169,12 @@ ENV CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
 
 The unpinned `python:3.11-slim` image can currently use a newer Debian/CMake combination that breaks `dlib==19.24.2`.
 
+The API requirements use `dlib-bin==19.24.2` plus `face_recognition==1.3.0 --no-deps` inside the Dockerfile. This avoids compiling `dlib` from source on Render while still making the `dlib` module available to `face_recognition`.
+
 If you still see the same dlib error after this fix:
 
 1. Confirm the Render build log begins with `FROM python:3.11-slim-bookworm`.
-2. Confirm the log has a step installing `"cmake<4"`.
+2. Confirm the log installs `dlib-bin==19.24.2`.
 3. In Render, use **Manual Deploy -> Clear build cache & deploy**.
 4. Make sure you pushed the latest `Dockerfile` to GitHub before redeploying.
 
