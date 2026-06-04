@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: smart-attendance-api
+    env: python
+    buildCommand: pip install -r requirements-api.txt
+    startCommand: uvicorn api.main_api:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: ALLOWED_ORIGIN
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true

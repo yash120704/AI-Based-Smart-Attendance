@@ -21,6 +21,83 @@ logger = logging.getLogger(__name__)
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 tf.get_logger().setLevel("ERROR")
 
+MODEL_PATH = os.environ.get("MODEL_DIR", "/tmp/models/")
+
+
+def _cloud_storage_enabled():
+    return all(
+        os.environ.get(name)
+        for name in (
+            "CLOUDINARY_CLOUD_NAME",
+            "CLOUDINARY_API_KEY",
+            "CLOUDINARY_API_SECRET",
+        )
+    )
+
+
+def _default_models_dir():
+    if os.environ.get("MODEL_DIR"):
+        return Path(os.environ["MODEL_DIR"])
+    if _cloud_storage_enabled():
+        return Path(MODEL_PATH)
+    return Path(MODELS_DIR)
+
+
+def _resolve_models_dir(models_dir=None):
+    if models_dir is None:
+        return _default_models_dir()
+
+    models_dir = Path(models_dir)
+    if models_dir == Path(MODELS_DIR) and (os.environ.get("MODEL_DIR") or _cloud_storage_enabled()):
+        return _default_models_dir()
+    return models_dir
+
+
+def _model_artifact_names(person_name):
+    return (
+        f"{person_name}_behavior.h5",
+        f"{person_name}_label_map.pkl",
+        f"{person_name}_preprocessor.pkl",
+    )
+
+
+def _ensure_cloud_model_artifacts(models_dir, person_name="global"):
+    if not _cloud_storage_enabled():
+        return
+
+    from utils.cloud_storage import download_model_file
+
+    models_dir = Path(models_dir)
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    for filename in _model_artifact_names(person_name):
+        destination = models_dir / filename
+        if destination.exists() and destination.stat().st_size > 0:
+            continue
+        try:
+            destination.write_bytes(download_model_file(filename))
+            logger.info(f"Downloaded Cloudinary model artifact to {destination}")
+        except Exception as exc:
+            logger.warning(f"Could not download Cloudinary model artifact {filename}: {exc}")
+
+
+def _upload_cloud_model_artifacts(models_dir, person_name="global"):
+    if not _cloud_storage_enabled():
+        return
+
+    from utils.cloud_storage import upload_model_file
+
+    models_dir = Path(models_dir)
+    for filename in _model_artifact_names(person_name):
+        artifact_path = models_dir / filename
+        if not artifact_path.exists():
+            continue
+        try:
+            upload_model_file(filename, artifact_path.read_bytes())
+            logger.info(f"Uploaded model artifact to Cloudinary: {filename}")
+        except Exception as exc:
+            logger.warning(f"Could not upload model artifact {filename} to Cloudinary: {exc}")
+
 
 def configure_tensorflow_runtime():
     """
@@ -154,7 +231,11 @@ class BehaviorModel:
 
     def __init__(self, model_path=None):
         if model_path is None:
-            model_path = Path(MODELS_DIR) / "global_behavior.h5"
+            model_path = _default_models_dir() / "global_behavior.h5"
+        else:
+            model_path = Path(model_path)
+
+        _ensure_cloud_model_artifacts(model_path.parent, "global")
 
         self.model_path = str(model_path)
         self.model = None
@@ -322,7 +403,7 @@ class BehaviorModel:
             return {}
 
     def save(self, person_name, models_dir=MODELS_DIR):
-        models_dir = Path(models_dir)
+        models_dir = _resolve_models_dir(models_dir)
         models_dir.mkdir(parents=True, exist_ok=True)
 
         model_path = models_dir / f"{person_name}_behavior.h5"
@@ -337,9 +418,11 @@ class BehaviorModel:
         joblib.dump(self.preprocessor.to_dict(), str(preprocessor_path))
         logger.info(f"Label map saved to {label_map_path}")
         logger.info(f"Preprocessor stats saved to {preprocessor_path}")
+        _upload_cloud_model_artifacts(models_dir, person_name)
 
     def load(self, person_name, models_dir=MODELS_DIR):
-        models_dir = Path(models_dir)
+        models_dir = _resolve_models_dir(models_dir)
+        _ensure_cloud_model_artifacts(models_dir, person_name)
         model_path = models_dir / f"{person_name}_behavior.h5"
         label_map_path = models_dir / f"{person_name}_label_map.pkl"
         preprocessor_path = models_dir / f"{person_name}_preprocessor.pkl"

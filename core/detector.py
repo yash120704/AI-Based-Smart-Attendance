@@ -1,11 +1,14 @@
 """
 Face Detection and Recognition using face_recognition library
 """
+import hashlib
 import logging
-import numpy as np
-import face_recognition
-import cv2
+import os
 from pathlib import Path
+
+import cv2
+import face_recognition
+import numpy as np
 from config import (
     KNOWN_FACES_DIR,
     FACE_RECOGNITION_TOLERANCE,
@@ -137,12 +140,90 @@ class FaceDetector:
         )
         return processed_frame, 1.0 / self.process_scale
 
+    def _cloud_storage_enabled(self):
+        return all(
+            os.environ.get(name)
+            for name in (
+                "CLOUDINARY_CLOUD_NAME",
+                "CLOUDINARY_API_KEY",
+                "CLOUDINARY_API_SECRET",
+            )
+        )
+
+    def _cache_cloud_image(self, person_name, image_url):
+        try:
+            import requests
+        except ImportError as exc:
+            raise RuntimeError("requests is required for Cloudinary face loading") from exc
+
+        cache_root = Path(os.environ.get("FACE_CACHE_DIR", "/tmp/faces"))
+        person_cache_dir = cache_root / person_name
+        person_cache_dir.mkdir(parents=True, exist_ok=True)
+
+        digest = hashlib.sha1(image_url.encode("utf-8")).hexdigest()
+        suffix = Path(image_url.split("?")[0]).suffix or ".jpg"
+        cached_path = person_cache_dir / f"{digest}{suffix}"
+        if cached_path.exists() and cached_path.stat().st_size > 0:
+            return cached_path
+
+        response = requests.get(image_url, timeout=30)
+        response.raise_for_status()
+        cached_path.write_bytes(response.content)
+        return cached_path
+
+    def _load_known_faces_from_cloud(self):
+        from utils.cloud_storage import list_all_face_images
+
+        face_images_by_person = list_all_face_images()
+        if not face_images_by_person:
+            logger.warning("No Cloudinary face images found")
+            return False
+
+        for person_name, image_urls in face_images_by_person.items():
+            person_encodings = []
+
+            for image_url in image_urls:
+                try:
+                    image_path = self._cache_cloud_image(person_name, image_url)
+                    image = face_recognition.load_image_file(str(image_path))
+                    encodings = face_recognition.face_encodings(image)
+
+                    if encodings:
+                        person_encodings.extend(encodings)
+                except Exception as exc:
+                    logger.error(f"Error loading Cloudinary image for {person_name}: {exc}")
+
+            if person_encodings:
+                avg_encoding = np.mean(person_encodings, axis=0)
+                self.known_encodings[person_name] = avg_encoding
+                self.known_names.append(person_name)
+                logger.info(f"Loaded {len(person_encodings)} Cloudinary images for {person_name}")
+            else:
+                logger.warning(f"No valid Cloudinary face images found for {person_name}")
+
+        if self.known_names:
+            self.known_encoding_matrix = np.array(
+                [self.known_encodings[name] for name in self.known_names],
+                dtype=np.float32,
+            )
+        else:
+            self.known_encoding_matrix = np.empty((0, 128), dtype=np.float32)
+
+        return bool(self.known_names)
+
     def load_known_faces(self):
         """
         Load and encode all known faces from directory structure
         """
         self.known_encodings = {}
         self.known_names = []
+
+        if self._cloud_storage_enabled():
+            try:
+                if self._load_known_faces_from_cloud():
+                    return
+            except Exception as exc:
+                logger.error(f"Cloudinary face loading failed, falling back to local faces: {exc}")
 
         if not self.known_faces_dir.exists():
             logger.warning(f"Known faces directory not found: {self.known_faces_dir}")

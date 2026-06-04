@@ -1,89 +1,164 @@
 """
-Attendance Logger to SQLite database
+Attendance logging with SQLite local mode and PostgreSQL cloud mode.
 """
 import logging
+import os
 import sqlite3
-import pandas as pd
 from datetime import datetime, timedelta
 from pathlib import Path
-from config import DB_PATH, ATTENDANCE_COOLDOWN_SECONDS, ALLOW_MULTIPLE_ATTENDANCE_PER_DAY
+
+import pandas as pd
+
+from config import ATTENDANCE_COOLDOWN_SECONDS, ALLOW_MULTIPLE_ATTENDANCE_PER_DAY, DB_PATH
 
 logger = logging.getLogger(__name__)
 
 
 class AttendanceLogger:
     """
-    Logs attendance events to SQLite database
+    Logs attendance events to the configured database.
+
+    Local development keeps the original SQLite behavior. Cloud deployments set
+    DATABASE_URL and use Supabase PostgreSQL with the same table shape.
     """
 
     def __init__(self, db_path=DB_PATH):
         """
-        Initialize attendance logger and create tables if needed
+        Initialize attendance logger and create tables if needed.
 
         Args:
-            db_path: Path to SQLite database file
+            db_path: Path to SQLite database file in local mode
         """
+        self.database_url = os.environ.get("DATABASE_URL")
+        self.use_postgres = bool(self.database_url)
         self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = None
         self.last_logged = {}
+
+        if not self.use_postgres:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
         self.connect()
         self.create_tables()
-        logger.info(f"AttendanceLogger initialized with database: {db_path}")
+        backend = "Supabase PostgreSQL" if self.use_postgres else f"SQLite database: {db_path}"
+        logger.info(f"AttendanceLogger initialized with {backend}")
 
     def connect(self):
         """
-        Connect to SQLite database
+        Connect to the configured database backend.
         """
         try:
-            self.conn = sqlite3.connect(str(self.db_path))
-            self.conn.row_factory = sqlite3.Row
-            logger.info("Connected to SQLite database")
-        except sqlite3.Error as e:
-            logger.error(f"Database connection error: {e}")
+            if self.use_postgres:
+                try:
+                    import psycopg2
+                except ImportError as exc:
+                    raise RuntimeError("psycopg2 is required when DATABASE_URL is set") from exc
+
+                self.conn = psycopg2.connect(
+                    self.database_url,
+                    sslmode=os.environ.get("DATABASE_SSLMODE", "require"),
+                )
+                logger.info("Connected to PostgreSQL database")
+            else:
+                self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+                self.conn.row_factory = sqlite3.Row
+                logger.info("Connected to SQLite database")
+        except Exception as exc:
+            logger.error(f"Database connection error: {exc}")
+            raise
+
+    def _placeholder(self):
+        return "%s" if self.use_postgres else "?"
+
+    def _today_clause(self):
+        if self.use_postgres:
+            return "DATE(timestamp) = CURRENT_DATE"
+        return "DATE(timestamp) = DATE('now', 'localtime')"
+
+    def _proxy_clause(self):
+        if self.use_postgres:
+            return "is_proxy = TRUE OR status = 'PROXY'"
+        return "is_proxy = 1 OR status = 'PROXY'"
+
+    def _boolean_value(self, value):
+        return bool(value) if self.use_postgres else int(bool(value))
+
+    def _read_sql(self, query, params=None):
+        return pd.read_sql_query(query, self.conn, params=params)
 
     def create_tables(self):
         """
-        Create tables if they don't exist
+        Create tables if they don't exist.
         """
         cursor = self.conn.cursor()
 
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS attendance (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                person_name TEXT NOT NULL,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                face_confidence REAL,
-                behavior_confidence REAL,
-                is_proxy INTEGER DEFAULT 0,
-                alert_message TEXT,
-                attempts INTEGER DEFAULT 0,
-                status TEXT,
-                blink_detected INTEGER DEFAULT 0
+        if self.use_postgres:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS persons (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    registered_at TIMESTAMP DEFAULT NOW(),
+                    total_attendances INTEGER DEFAULT 0,
+                    blocked BOOLEAN DEFAULT FALSE,
+                    blocked_until TIMESTAMP
+                )
+                """
             )
-        """
-        )
 
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS persons (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE NOT NULL,
-                registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                total_attendances INTEGER DEFAULT 0,
-                blocked INTEGER DEFAULT 0,
-                blocked_until DATETIME
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS attendance (
+                    id SERIAL PRIMARY KEY,
+                    person_name TEXT NOT NULL,
+                    timestamp TIMESTAMP DEFAULT NOW(),
+                    face_confidence REAL,
+                    behavior_confidence REAL,
+                    is_proxy BOOLEAN DEFAULT FALSE,
+                    alert_message TEXT,
+                    attempts INTEGER DEFAULT 1,
+                    status TEXT,
+                    blink_detected BOOLEAN DEFAULT FALSE
+                )
+                """
             )
-        """
-        )
+        else:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS attendance (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    person_name TEXT NOT NULL,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    face_confidence REAL,
+                    behavior_confidence REAL,
+                    is_proxy INTEGER DEFAULT 0,
+                    alert_message TEXT,
+                    attempts INTEGER DEFAULT 0,
+                    status TEXT,
+                    blink_detected INTEGER DEFAULT 0
+                )
+                """
+            )
+
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS persons (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL,
+                    registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    total_attendances INTEGER DEFAULT 0,
+                    blocked INTEGER DEFAULT 0,
+                    blocked_until DATETIME
+                )
+                """
+            )
 
         self.conn.commit()
         logger.info("Database tables created/verified")
 
     def log(self, person_name, face_conf, behavior_conf, is_proxy, alert_message, attempts=0, status="PENDING", blink_detected=0):
         """
-        Log attendance event with cooldown check
+        Log attendance event with cooldown check.
 
         Args:
             person_name: Name of person
@@ -119,13 +194,23 @@ class AttendanceLogger:
                 }
 
         cursor = self.conn.cursor()
+        placeholder = self._placeholder()
         cursor.execute(
-            """
+            f"""
             INSERT INTO attendance
             (person_name, face_confidence, behavior_confidence, is_proxy, alert_message, attempts, status, blink_detected)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-            (person_name, face_conf, behavior_conf, int(is_proxy), alert_message, attempts, status, blink_detected),
+            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
+            """,
+            (
+                person_name,
+                face_conf,
+                behavior_conf,
+                self._boolean_value(is_proxy),
+                alert_message,
+                attempts,
+                status,
+                self._boolean_value(blink_detected),
+            ),
         )
         self.conn.commit()
         self.last_logged[person_name] = now
@@ -133,9 +218,15 @@ class AttendanceLogger:
         logger.info(f"Logged attendance for {person_name}: {status}")
         return {"status": "SUCCESS", "message": f"Attendance logged for {person_name}"}
 
+    def log_attendance(self, *args, **kwargs):
+        """
+        Compatibility alias for API-facing code.
+        """
+        return self.log(*args, **kwargs)
+
     def has_marked_today(self, person_name):
         """
-        Check if person already marked attendance today
+        Check if person already marked attendance today.
 
         Args:
             person_name: Name of person
@@ -144,13 +235,14 @@ class AttendanceLogger:
             bool: True if already marked today
         """
         cursor = self.conn.cursor()
+        placeholder = self._placeholder()
         cursor.execute(
-            """
+            f"""
             SELECT COUNT(*) FROM attendance
-            WHERE person_name = ?
-            AND DATE(timestamp) = DATE('now', 'localtime')
+            WHERE person_name = {placeholder}
+            AND {self._today_clause()}
             AND status = 'SUCCESS'
-        """,
+            """,
             (person_name,),
         )
         result = cursor.fetchone()[0]
@@ -158,7 +250,7 @@ class AttendanceLogger:
 
     def mark_person_for_reattendance(self, person_name):
         """
-        Mark a person as allowed for re-attendance
+        Mark a person as allowed for re-attendance.
 
         Args:
             person_name: Name of person
@@ -167,17 +259,24 @@ class AttendanceLogger:
             dict: Result of operation
         """
         cursor = self.conn.cursor()
+        placeholder = self._placeholder()
         cursor.execute(
-            "UPDATE persons SET blocked = 0, blocked_until = NULL WHERE name = ?",
-            (person_name,),
+            f"UPDATE persons SET blocked = {placeholder}, blocked_until = NULL WHERE name = {placeholder}",
+            (self._boolean_value(False), person_name),
         )
         self.conn.commit()
         logger.info(f"Person {person_name} marked for re-attendance")
         return {"status": "SUCCESS", "message": f"{person_name} can now mark attendance again"}
 
+    def unblock_person(self, person_name):
+        """
+        Unblock a person from attendance restrictions.
+        """
+        return self.mark_person_for_reattendance(person_name)
+
     def block_person(self, person_name, duration_minutes=0):
         """
-        Block a person from marking attendance
+        Block a person from marking attendance.
 
         Args:
             person_name: Name of person
@@ -187,13 +286,14 @@ class AttendanceLogger:
             dict: Result of operation
         """
         cursor = self.conn.cursor()
+        placeholder = self._placeholder()
         blocked_until = None
         if duration_minutes > 0:
             blocked_until = datetime.now() + timedelta(minutes=duration_minutes)
 
         cursor.execute(
-            "UPDATE persons SET blocked = 1, blocked_until = ? WHERE name = ?",
-            (blocked_until, person_name),
+            f"UPDATE persons SET blocked = {placeholder}, blocked_until = {placeholder} WHERE name = {placeholder}",
+            (self._boolean_value(True), blocked_until, person_name),
         )
         self.conn.commit()
         logger.info(f"Person {person_name} blocked")
@@ -201,7 +301,7 @@ class AttendanceLogger:
 
     def is_person_blocked(self, person_name):
         """
-        Check if a person is blocked
+        Check if a person is blocked.
 
         Args:
             person_name: Name of person
@@ -210,11 +310,12 @@ class AttendanceLogger:
             bool: True if blocked
         """
         cursor = self.conn.cursor()
+        placeholder = self._placeholder()
         cursor.execute(
-            """
+            f"""
             SELECT blocked, blocked_until FROM persons
-            WHERE name = ?
-        """,
+            WHERE name = {placeholder}
+            """,
             (person_name,),
         )
         result = cursor.fetchone()
@@ -226,27 +327,37 @@ class AttendanceLogger:
             return False
 
         if blocked_until:
-            if datetime.fromisoformat(blocked_until) > datetime.now():
-                return True
+            if isinstance(blocked_until, datetime):
+                blocked_until_dt = blocked_until
             else:
-                self.mark_person_for_reattendance(person_name)
-                return False
+                blocked_until_dt = datetime.fromisoformat(str(blocked_until))
+
+            if blocked_until_dt > datetime.now():
+                return True
+            self.mark_person_for_reattendance(person_name)
+            return False
 
         return True
 
     def get_today_attendance(self):
         """
-        Get today's attendance records
+        Get today's attendance records.
 
         Returns:
             DataFrame: Today's attendance records
         """
-        query = """
+        query = f"""
             SELECT * FROM attendance
-            WHERE DATE(timestamp) = DATE('now', 'localtime')
+            WHERE {self._today_clause()}
             ORDER BY timestamp DESC
         """
-        return pd.read_sql_query(query, self.conn)
+        return self._read_sql(query)
+
+    def get_today_records(self):
+        """
+        Compatibility alias for API-facing code.
+        """
+        return self.get_today_attendance()
 
     def get_today_attendance_count(self):
         """
@@ -257,26 +368,26 @@ class AttendanceLogger:
         """
         cursor = self.conn.cursor()
         cursor.execute(
-            """
+            f"""
             SELECT COUNT(*) FROM attendance
-            WHERE DATE(timestamp) = DATE('now', 'localtime')
-        """
+            WHERE {self._today_clause()}
+            """
         )
         return int(cursor.fetchone()[0])
 
     def get_all_attendance(self):
         """
-        Get all attendance records
+        Get all attendance records.
 
         Returns:
             DataFrame: All attendance records
         """
         query = "SELECT * FROM attendance ORDER BY timestamp DESC"
-        return pd.read_sql_query(query, self.conn)
+        return self._read_sql(query)
 
     def get_attendance_range(self, start_date, end_date):
         """
-        Get attendance records for date range
+        Get attendance records for date range.
 
         Args:
             start_date: Start date (datetime or string YYYY-MM-DD)
@@ -290,26 +401,27 @@ class AttendanceLogger:
         if isinstance(end_date, datetime):
             end_date = end_date.strftime("%Y-%m-%d")
 
-        query = """
+        placeholder = self._placeholder()
+        query = f"""
             SELECT * FROM attendance
-            WHERE DATE(timestamp) BETWEEN ? AND ?
+            WHERE DATE(timestamp) BETWEEN {placeholder} AND {placeholder}
             ORDER BY timestamp DESC
         """
-        return pd.read_sql_query(query, self.conn, params=(start_date, end_date))
+        return self._read_sql(query, params=(start_date, end_date))
 
     def get_proxy_alerts(self):
         """
-        Get all proxy alert records
+        Get all proxy alert records.
 
         Returns:
             DataFrame: Proxy alert records
         """
-        query = """
+        query = f"""
             SELECT * FROM attendance
-            WHERE is_proxy = 1 OR status = 'PROXY'
+            WHERE {self._proxy_clause()}
             ORDER BY timestamp DESC
         """
-        return pd.read_sql_query(query, self.conn)
+        return self._read_sql(query)
 
     def get_proxy_alert_count(self):
         """
@@ -320,16 +432,16 @@ class AttendanceLogger:
         """
         cursor = self.conn.cursor()
         cursor.execute(
-            """
+            f"""
             SELECT COUNT(*) FROM attendance
-            WHERE is_proxy = 1 OR status = 'PROXY'
-        """
+            WHERE {self._proxy_clause()}
+            """
         )
         return int(cursor.fetchone()[0])
 
     def get_person_attendance(self, person_name):
         """
-        Get all attendance records for a person
+        Get all attendance records for a person.
 
         Args:
             person_name: Name of person
@@ -337,26 +449,38 @@ class AttendanceLogger:
         Returns:
             DataFrame: Person's attendance records
         """
-        query = """
+        placeholder = self._placeholder()
+        query = f"""
             SELECT * FROM attendance
-            WHERE person_name = ?
+            WHERE person_name = {placeholder}
             ORDER BY timestamp DESC
         """
-        return pd.read_sql_query(query, self.conn, params=(person_name,))
+        return self._read_sql(query, params=(person_name,))
 
     def register_person(self, person_name):
         """
-        Register a new person in the database
+        Register a new person in the database.
 
         Args:
             person_name: Name of person
         """
         cursor = self.conn.cursor()
+        placeholder = self._placeholder()
         try:
-            cursor.execute(
-                "INSERT INTO persons (name, blocked) VALUES (?, 0)",
-                (person_name,),
-            )
+            if self.use_postgres:
+                cursor.execute(
+                    """
+                    INSERT INTO persons (name, blocked)
+                    VALUES (%s, FALSE)
+                    ON CONFLICT (name) DO NOTHING
+                    """,
+                    (person_name,),
+                )
+            else:
+                cursor.execute(
+                    f"INSERT INTO persons (name, blocked) VALUES ({placeholder}, 0)",
+                    (person_name,),
+                )
             self.conn.commit()
             logger.info(f"Person {person_name} registered in database")
         except sqlite3.IntegrityError:
@@ -364,54 +488,74 @@ class AttendanceLogger:
 
     def update_person_attendance_count(self, person_name):
         """
-        Update total attendance count for a person
+        Update total attendance count for a person.
 
         Args:
             person_name: Name of person
         """
         cursor = self.conn.cursor()
+        placeholder = self._placeholder()
         cursor.execute(
-            """
+            f"""
             UPDATE persons
             SET total_attendances = (
                 SELECT COUNT(*) FROM attendance
-                WHERE person_name = ? AND status = 'SUCCESS'
+                WHERE person_name = {placeholder} AND status = 'SUCCESS'
             )
-            WHERE name = ?
-        """,
+            WHERE name = {placeholder}
+            """,
             (person_name, person_name),
         )
         self.conn.commit()
 
     def get_persons_stats(self):
         """
-        Get statistics for all registered persons
+        Get statistics for all registered persons.
 
         Returns:
             DataFrame: Person statistics
         """
-        query = """
-            SELECT
-                p.name,
-                p.registered_at,
-                p.total_attendances,
-                p.blocked,
-                COUNT(a.id) as total_records,
-                SUM(CASE WHEN a.status = 'PROXY' THEN 1 ELSE 0 END) as proxy_count
-            FROM persons p
-            LEFT JOIN attendance a ON p.name = a.person_name
-            GROUP BY p.name
-            ORDER BY p.name
-        """
-        return pd.read_sql_query(query, self.conn)
+        if self.use_postgres:
+            query = """
+                SELECT
+                    p.name,
+                    p.registered_at,
+                    p.total_attendances,
+                    p.blocked,
+                    COUNT(a.id) as total_records,
+                    COALESCE(SUM(CASE WHEN a.status = 'PROXY' THEN 1 ELSE 0 END), 0) as proxy_count
+                FROM persons p
+                LEFT JOIN attendance a ON p.name = a.person_name
+                GROUP BY p.id, p.name, p.registered_at, p.total_attendances, p.blocked
+                ORDER BY p.name
+            """
+        else:
+            query = """
+                SELECT
+                    p.name,
+                    p.registered_at,
+                    p.total_attendances,
+                    p.blocked,
+                    COUNT(a.id) as total_records,
+                    SUM(CASE WHEN a.status = 'PROXY' THEN 1 ELSE 0 END) as proxy_count
+                FROM persons p
+                LEFT JOIN attendance a ON p.name = a.person_name
+                GROUP BY p.name
+                ORDER BY p.name
+            """
+        return self._read_sql(query)
 
     def close(self):
         """
-        Close database connection
+        Close database connection.
         """
         if self.conn:
             self.conn.close()
+            self.conn = None
             logger.info("Database connection closed")
 
     def __del__(self):
-        self.close()
+        try:
+            self.close()
+        except Exception:
+            pass
