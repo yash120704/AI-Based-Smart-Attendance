@@ -75,15 +75,17 @@ CREATE TABLE IF NOT EXISTS attendance (
 );
 ```
 
-For Render, use the Supabase Direct connection URI, not the pooler.
+For Render, use the Supabase **Session Pooler** URI unless your Supabase project has the paid IPv4 add-on.
 
 Format:
 
 ```text
-postgresql://postgres:<PASSWORD_URL_ENCODED>@db.<PROJECT_REF>.supabase.co:5432/postgres?sslmode=require
+postgresql://postgres.<PROJECT_REF>:<PASSWORD_URL_ENCODED>@aws-0-<REGION>.pooler.supabase.com:5432/postgres?sslmode=require
 ```
 
 If your database password contains `@`, replace that character with `%40` in the URL.
+
+Why Session Pooler: Supabase Direct connections use `db.<project-ref>.supabase.co:5432`, which resolves to IPv6 on many projects. Render services may not have outbound IPv6, so the app can fail with `Network is unreachable`. Supabase documents Session Pooler as the persistent-backend option for IPv4-only networks.
 
 ## Step 2: Cloudinary
 
@@ -131,7 +133,7 @@ Render setup:
 Set these Render env vars:
 
 ```text
-DATABASE_URL=postgresql://postgres:<PASSWORD_URL_ENCODED>@db.<PROJECT_REF>.supabase.co:5432/postgres?sslmode=require
+DATABASE_URL=postgresql://postgres.<PROJECT_REF>:<PASSWORD_URL_ENCODED>@aws-0-<REGION>.pooler.supabase.com:5432/postgres?sslmode=require
 CLOUDINARY_CLOUD_NAME=<your-cloud-name>
 CLOUDINARY_API_KEY=<your-api-key>
 CLOUDINARY_API_SECRET=<your-api-secret>
@@ -150,10 +152,10 @@ https://your-render-service.onrender.com/health
 Expected:
 
 ```json
-{"status":"ok","model_loaded":true}
+{"status":"ok","model_loaded":false,"vision_loaded":false}
 ```
 
-If `model_loaded` is `false`, check Cloudinary model env vars and Render logs.
+The backend lazy-loads the heavy face recognition, MediaPipe, and TensorFlow stack on the first `/api/verify-frame` request. This keeps Render from running out of memory before the web server opens its port. After the first successful verify request, `vision_loaded` and `model_loaded` should become `true`.
 
 If Render build fails while building `dlib` with a CMake policy error, make sure your pushed `Dockerfile` starts with:
 
@@ -218,7 +220,7 @@ This matters because the backend intentionally accepts browser API calls only fr
 Check these in order:
 
 - Render `/health` returns `status: ok`.
-- Render `/health` has `model_loaded: true`.
+- Render `/health` opens quickly. It may show `vision_loaded: false` before webcam verification because the ML stack loads lazily.
 - Vercel dashboard opens.
 - Dashboard stats load without CORS errors.
 - Attendance history page loads.
@@ -233,7 +235,7 @@ Check these in order:
 
 - Local mode still works without `DATABASE_URL`; it uses SQLite and local files.
 - Cloud mode activates when `DATABASE_URL` and Cloudinary env vars are set.
-- Render free tier may cold-start slowly because TensorFlow, MediaPipe, dlib, and model loading are heavy.
+- Render free tier has only 512 MiB RAM. The backend now lazy-loads TensorFlow, MediaPipe, and face recognition on `/api/verify-frame`; dashboard/database endpoints should run, but webcam verification may still need a larger Render instance if memory runs out during the first verification.
 - Browser webcam access requires HTTPS. Vercel provides HTTPS automatically.
 - The `/api/register` endpoint triggers the original local registration script. That original script expects a local webcam and GUI, so it is preserved but not very useful on a headless Render server. Your deployed system should use the already-migrated Cloudinary faces/models for verification.
 
@@ -242,8 +244,9 @@ Check these in order:
 Database connection fails:
 
 - Make sure the password is URL-encoded.
-- Use the Direct connection string.
+- On Render, use the Supabase Session Pooler connection string, not Direct connection.
 - Add `?sslmode=require`.
+- If you see an IPv6 address and `Network is unreachable`, you are still using the Direct connection string.
 
 CORS error in browser:
 

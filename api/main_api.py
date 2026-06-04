@@ -9,12 +9,12 @@ import subprocess
 import sys
 import threading
 import time
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-import cv2
 import numpy as np
 import pandas as pd
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -32,19 +32,9 @@ from config import (
     MIN_BEHAVIOR_TEMPORAL_STD,
 )
 from core.attendance_logger import AttendanceLogger
-from core.behavior_model import BehaviorModel
-from core.detector import FaceDetector
-from core.pose_extractor import PoseExtractor
-from main import (
-    EYE_AR_CONSEC_FRAMES,
-    EYE_AR_THRESHOLD,
-    PersonState,
-    evaluate_behavior_votes,
-    get_face_landmarks_eye_coords,
-    is_face_centered,
-    log_live_behavior_diagnostics,
-)
+from core.liveness_detector import LivenessDetector
 from utils.feature_engineering import compute_motion_metrics
+from utils.sequence_buffer import TimedSequenceBuffer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -72,6 +62,162 @@ class VerifyFrameRequest(BaseModel):
     session_id: str = Field(..., min_length=1)
 
 
+EYE_AR_THRESHOLD = 0.34
+EYE_AR_CONSEC_FRAMES = 1
+
+
+class PersonState:
+    """
+    API-local copy of the main.py per-person state.
+    """
+
+    def __init__(self):
+        self.state = "DETECTED"
+        self.attempts = 0
+        self.blocked = False
+        self.liveness = LivenessDetector()
+        self.behavior_buffer = TimedSequenceBuffer()
+        self.state_start_time = time.time()
+        self.face_name = ""
+        self.face_confidence = 0.0
+        self.behavior_name = ""
+        self.behavior_confidence = 0.0
+        self.blink_detected = False
+        self.behavior_predictions = []
+        self.behavior_confidences = []
+        self.last_is_proxy = False
+        self.last_diagnostic_log_time = 0.0
+        self.last_motion_gate_log_time = 0.0
+        self.last_behavior_skip_log_time = 0.0
+        self.behavior_pose_missing_frames = 0
+        self.behavior_not_centered_frames = 0
+        self.behavior_accepted_frames = 0
+        self.behavior_sequences_emitted = 0
+
+    def reset_behavior_session(self):
+        self.behavior_buffer.reset()
+        self.behavior_predictions = []
+        self.behavior_confidences = []
+        self.behavior_name = ""
+        self.behavior_confidence = 0.0
+        self.last_is_proxy = False
+        self.last_diagnostic_log_time = 0.0
+        self.last_motion_gate_log_time = 0.0
+        self.last_behavior_skip_log_time = 0.0
+        self.behavior_pose_missing_frames = 0
+        self.behavior_not_centered_frames = 0
+        self.behavior_accepted_frames = 0
+        self.behavior_sequences_emitted = 0
+
+    def start_behavior(self):
+        self.state = "BEHAVIOR"
+        self.blink_detected = True
+        self.reset_behavior_session()
+        self.state_start_time = time.time()
+
+    def start_blink_wait(self):
+        self.state = "WAIT_BLINK"
+        self.liveness.start()
+        self.blink_detected = False
+        self.reset_behavior_session()
+        self.state_start_time = time.time()
+
+
+def is_face_centered(bbox, frame_w, frame_h, center_margin=0.30):
+    top, right, bottom, left = bbox
+    cx = (left + right) / 2.0
+    cy = (top + bottom) / 2.0
+
+    x_min = frame_w * (0.5 - center_margin / 2.0)
+    x_max = frame_w * (0.5 + center_margin / 2.0)
+    y_min = frame_h * (0.5 - center_margin / 2.0)
+    y_max = frame_h * (0.5 + center_margin / 2.0)
+
+    return x_min <= cx <= x_max and y_min <= cy <= y_max
+
+
+def get_face_landmarks_eye_coords(face_landmarks):
+    if face_landmarks is None:
+        return None, None
+
+    try:
+        right_eye = np.array(
+            [
+                [face_landmarks[33].x, face_landmarks[33].y],
+                [face_landmarks[159].x, face_landmarks[159].y],
+                [face_landmarks[145].x, face_landmarks[145].y],
+                [face_landmarks[133].x, face_landmarks[133].y],
+            ]
+        )
+        left_eye = np.array(
+            [
+                [face_landmarks[263].x, face_landmarks[263].y],
+                [face_landmarks[388].x, face_landmarks[388].y],
+                [face_landmarks[374].x, face_landmarks[374].y],
+                [face_landmarks[362].x, face_landmarks[362].y],
+            ]
+        )
+        return left_eye, right_eye
+    except (IndexError, AttributeError):
+        return None, None
+
+
+def evaluate_behavior_votes(face_name, predictions, confidences):
+    if not predictions:
+        return "RETRY", "Unknown", 0.0
+
+    counts = Counter(predictions)
+    final_name, vote_count = counts.most_common(1)[0]
+    selected_confidences = [
+        confidence
+        for prediction, confidence in zip(predictions, confidences)
+        if prediction == final_name
+    ]
+    final_confidence = float(np.mean(selected_confidences)) if selected_confidences else 0.0
+
+    if len(predictions) < 5:
+        return "RETRY", final_name, final_confidence
+    if final_name != face_name:
+        return "RETRY", final_name, final_confidence
+    if vote_count < 3:
+        return "RETRY", final_name, final_confidence
+    if final_confidence < BEHAVIOR_CONFIDENCE_THRESHOLD:
+        return "RETRY", final_name, final_confidence
+
+    return "SUCCESS", final_name, final_confidence
+
+
+def log_live_behavior_diagnostics(global_model, person_state, raw_sequence, motion_metrics):
+    diagnostics = global_model.get_sequence_diagnostics(raw_sequence)
+    now = time.time()
+
+    should_log = (now - person_state.last_diagnostic_log_time) >= 1.0
+    if diagnostics.get("feature_mean_gap") is not None and diagnostics["feature_mean_gap"] > 0.75:
+        should_log = True
+    if (
+        motion_metrics["motion_score"] < MIN_BEHAVIOR_MOTION_SCORE
+        or motion_metrics["temporal_std"] < MIN_BEHAVIOR_TEMPORAL_STD
+    ):
+        should_log = True
+
+    if should_log:
+        logger.info(
+            "Behavior diagnostic | live_feature_mean=%.4f train_feature_mean=%.4f "
+            "| live_feature_std=%.4f train_feature_std=%.4f | feature_mean_gap=%.4f "
+            "| motion_score=%.4f peak_motion=%.4f temporal_std=%.4f | label_map=%s",
+            diagnostics["live_feature_mean"],
+            diagnostics["training_feature_mean"] or 0.0,
+            diagnostics["live_feature_std"],
+            diagnostics["training_feature_std"] or 0.0,
+            diagnostics["feature_mean_gap"] or 0.0,
+            motion_metrics["motion_score"],
+            motion_metrics["peak_motion"],
+            motion_metrics["temporal_std"],
+            global_model.label_map,
+        )
+        person_state.last_diagnostic_log_time = now
+
+
 @dataclass
 class VerifySession:
     session_id: str
@@ -81,14 +227,16 @@ class VerifySession:
 
 
 attendance_logger: Optional[AttendanceLogger] = None
-face_detector: Optional[FaceDetector] = None
-pose_extractor: Optional[PoseExtractor] = None
-behavior_model: Optional[BehaviorModel] = None
+face_detector: Optional[Any] = None
+pose_extractor: Optional[Any] = None
+behavior_model: Optional[Any] = None
 behavior_model_loaded = False
+vision_components_loaded = False
 
 sessions: Dict[str, VerifySession] = {}
 connected_websockets: Set[WebSocket] = set()
 db_lock = threading.Lock()
+vision_lock = threading.Lock()
 processing_lock = asyncio.Lock()
 
 SESSION_TIMEOUT_SECONDS = 60
@@ -122,9 +270,40 @@ def _dataframe_records(df: pd.DataFrame) -> List[Dict[str, Any]]:
     return records
 
 
-def _require_components():
-    if attendance_logger is None or face_detector is None or pose_extractor is None or behavior_model is None:
+def _require_db():
+    if attendance_logger is None:
         raise HTTPException(status_code=503, detail="Attendance API is still initializing")
+
+
+def _ensure_vision_components():
+    global face_detector, pose_extractor, behavior_model, behavior_model_loaded, vision_components_loaded
+
+    if face_detector is not None and pose_extractor is not None and behavior_model is not None:
+        return
+
+    with vision_lock:
+        if face_detector is not None and pose_extractor is not None and behavior_model is not None:
+            return
+
+        logger.info("Lazy-loading vision and behavior components...")
+        from core.behavior_model import BehaviorModel
+        from core.detector import FaceDetector
+        from core.pose_extractor import PoseExtractor
+
+        face_detector = FaceDetector()
+        pose_extractor = PoseExtractor()
+        behavior_model = BehaviorModel()
+        behavior_model_loaded = bool(behavior_model.is_trained)
+
+        if not behavior_model_loaded:
+            behavior_model_loaded = bool(behavior_model.load("global"))
+
+        if attendance_logger is not None:
+            for person_name in face_detector.known_names:
+                attendance_logger.register_person(person_name)
+
+        vision_components_loaded = True
+        logger.info("Vision components loaded | behavior_model_loaded=%s", behavior_model_loaded)
 
 
 def _run_script(script_name: str, args: Optional[List[str]] = None):
@@ -134,23 +313,11 @@ def _run_script(script_name: str, args: Optional[List[str]] = None):
     subprocess.run(command, cwd=_project_root(), check=True)
 
 
-def _initialize_components():
-    global attendance_logger, face_detector, pose_extractor, behavior_model, behavior_model_loaded
+def _initialize_database():
+    global attendance_logger
 
     attendance_logger = AttendanceLogger()
-    face_detector = FaceDetector()
-    pose_extractor = PoseExtractor()
-    behavior_model = BehaviorModel()
-    behavior_model_loaded = bool(behavior_model.is_trained)
-
-    if not behavior_model_loaded:
-        behavior_model_loaded = bool(behavior_model.load("global"))
-
-    for person_name in face_detector.known_names:
-        attendance_logger.register_person(person_name)
-
-    logger.info("FastAPI components initialized")
-    logger.info("Behavior model loaded: %s", behavior_model_loaded)
+    logger.info("FastAPI database initialized; vision stack will load on first verify-frame request")
 
 
 async def _cleanup_sessions_loop():
@@ -168,7 +335,7 @@ async def _cleanup_sessions_loop():
 
 @app.on_event("startup")
 async def startup():
-    await asyncio.to_thread(_initialize_components)
+    await asyncio.to_thread(_initialize_database)
     asyncio.create_task(_cleanup_sessions_loop())
 
 
@@ -179,6 +346,8 @@ async def shutdown():
 
 
 def _decode_frame(frame_payload: str) -> np.ndarray:
+    import cv2
+
     if "," in frame_payload:
         frame_payload = frame_payload.split(",", 1)[1]
 
@@ -275,7 +444,8 @@ def _log_attendance_event(
 
 
 def _process_verify_frame(payload: VerifyFrameRequest) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
-    _require_components()
+    _require_db()
+    _ensure_vision_components()
     assert attendance_logger is not None
     assert face_detector is not None
     assert pose_extractor is not None
@@ -511,7 +681,11 @@ async def _broadcast_event(event: Dict[str, Any]):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model_loaded": behavior_model_loaded}
+    return {
+        "status": "ok",
+        "model_loaded": behavior_model_loaded,
+        "vision_loaded": vision_components_loaded,
+    }
 
 
 @app.post("/api/register")
@@ -531,7 +705,7 @@ def train(background_tasks: BackgroundTasks):
 
 @app.get("/api/attendance/today")
 def attendance_today():
-    _require_components()
+    _require_db()
     with db_lock:
         assert attendance_logger is not None
         records = _dataframe_records(attendance_logger.get_today_attendance())
@@ -543,7 +717,7 @@ def attendance_history(
     start: date = Query(...),
     end: date = Query(...),
 ):
-    _require_components()
+    _require_db()
     with db_lock:
         assert attendance_logger is not None
         records = _dataframe_records(attendance_logger.get_attendance_range(start, end))
@@ -552,7 +726,7 @@ def attendance_history(
 
 @app.get("/api/persons")
 def persons():
-    _require_components()
+    _require_db()
     with db_lock:
         assert attendance_logger is not None
         records = _dataframe_records(attendance_logger.get_persons_stats())
@@ -561,7 +735,7 @@ def persons():
 
 @app.post("/api/persons/{name}/block")
 def block_person(name: str):
-    _require_components()
+    _require_db()
     with db_lock:
         assert attendance_logger is not None
         result = attendance_logger.block_person(name)
@@ -570,7 +744,7 @@ def block_person(name: str):
 
 @app.post("/api/persons/{name}/unblock")
 def unblock_person(name: str):
-    _require_components()
+    _require_db()
     with db_lock:
         assert attendance_logger is not None
         result = attendance_logger.unblock_person(name)
@@ -579,7 +753,7 @@ def unblock_person(name: str):
 
 @app.post("/api/persons/{name}/reenable")
 def reenable_person(name: str):
-    _require_components()
+    _require_db()
     with db_lock:
         assert attendance_logger is not None
         result = attendance_logger.mark_person_for_reattendance(name)
@@ -588,7 +762,7 @@ def reenable_person(name: str):
 
 @app.get("/api/proxy-alerts")
 def proxy_alerts():
-    _require_components()
+    _require_db()
     with db_lock:
         assert attendance_logger is not None
         records = _dataframe_records(attendance_logger.get_proxy_alerts())
@@ -597,7 +771,7 @@ def proxy_alerts():
 
 @app.get("/api/stats")
 def stats():
-    _require_components()
+    _require_db()
     with db_lock:
         assert attendance_logger is not None
         today_df = attendance_logger.get_today_attendance()
