@@ -1,5 +1,7 @@
 FROM python:3.11-slim-bookworm
 
+ENV CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+
 RUN apt-get update && apt-get install -y \
     cmake build-essential libopenblas-dev \
     liblapack-dev libx11-dev libgtk-3-dev \
@@ -9,6 +11,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 COPY requirements-api.txt .
 RUN python -m pip install --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir "cmake<4" \
     && pip install --no-cache-dir -r requirements-api.txt
 
 COPY . .

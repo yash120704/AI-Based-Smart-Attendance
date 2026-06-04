@@ -161,7 +161,20 @@ If Render build fails while building `dlib` with a CMake policy error, make sure
 FROM python:3.11-slim-bookworm
 ```
 
+The Dockerfile also pins `cmake<4` and sets:
+
+```dockerfile
+ENV CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+```
+
 The unpinned `python:3.11-slim` image can currently use a newer Debian/CMake combination that breaks `dlib==19.24.2`.
+
+If you still see the same dlib error after this fix:
+
+1. Confirm the Render build log begins with `FROM python:3.11-slim-bookworm`.
+2. Confirm the log has a step installing `"cmake<4"`.
+3. In Render, use **Manual Deploy -> Clear build cache & deploy**.
+4. Make sure you pushed the latest `Dockerfile` to GitHub before redeploying.
 
 ## Step 5: Deploy Frontend On Vercel
 
