@@ -155,6 +155,14 @@ Expected:
 
 If `model_loaded` is `false`, check Cloudinary model env vars and Render logs.
 
+If Render build fails while building `dlib` with a CMake policy error, make sure your pushed `Dockerfile` starts with:
+
+```dockerfile
+FROM python:3.11-slim-bookworm
+```
+
+The unpinned `python:3.11-slim` image can currently use a newer Debian/CMake combination that breaks `dlib==19.24.2`.
+
 ## Step 5: Deploy Frontend On Vercel
 
 Vercel setup:

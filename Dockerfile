@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 RUN apt-get update && apt-get install -y \
     cmake build-essential libopenblas-dev \
@@ -8,7 +8,8 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 COPY requirements-api.txt .
-RUN pip install --no-cache-dir -r requirements-api.txt
+RUN python -m pip install --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir -r requirements-api.txt
 
 COPY . .
 CMD uvicorn api.main_api:app --host 0.0.0.0 --port ${PORT:-8000}
