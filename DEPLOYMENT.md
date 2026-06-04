@@ -199,6 +199,8 @@ Set this Vercel env var:
 NEXT_PUBLIC_API_URL=https://your-render-service.onrender.com
 ```
 
+Set it in Vercel Project Settings -> Environment Variables. Do not create a Vercel secret named `api_url`; `frontend/vercel.json` does not reference that secret.
+
 Deploy.
 
 ## Step 6: Update Render CORS
