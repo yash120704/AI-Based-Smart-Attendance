@@ -171,6 +171,8 @@ The unpinned `python:3.11-slim` image can currently use a newer Debian/CMake com
 
 The API requirements use `dlib-bin==19.24.2` plus `face_recognition==1.3.0 --no-deps` inside the Dockerfile. The Dockerfile also installs `face_recognition_models` directly from `https://github.com/ageitgey/face_recognition_models` and verifies the import after `COPY . .`. This avoids compiling `dlib` from source on Render while still making the `dlib` module and model files available to `face_recognition`.
 
+The Dockerfile pins `setuptools==70.3.0` because `face_recognition_models` imports `pkg_resources`, which is no longer available in newer setuptools releases.
+
 If you still see the same dlib error after this fix:
 
 1. Confirm the Render build log begins with `FROM python:3.11-slim-bookworm`.

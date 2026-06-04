@@ -10,7 +10,8 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 COPY requirements-api.txt .
-RUN python -m pip install --upgrade pip setuptools wheel \
+RUN python -m pip install --upgrade pip wheel \
+    && pip install --no-cache-dir "setuptools==70.3.0" \
     && pip install --no-cache-dir "cmake<4" \
     && pip install --no-cache-dir -r requirements-api.txt \
     && pip install --no-cache-dir git+https://github.com/ageitgey/face_recognition_models \
