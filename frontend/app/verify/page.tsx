@@ -31,6 +31,10 @@ function progressFor(result: VerifyFrameResponse | null) {
   return 10;
 }
 
+function newSessionId() {
+  return globalThis.crypto?.randomUUID?.() || `${Date.now()}`;
+}
+
 export default function VerifyPage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -43,7 +47,7 @@ export default function VerifyPage() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      setSessionId(globalThis.crypto?.randomUUID?.() || `${Date.now()}`);
+      setSessionId(newSessionId());
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
@@ -110,7 +114,7 @@ export default function VerifyPage() {
   }
 
   function resetSession() {
-    setSessionId(globalThis.crypto?.randomUUID?.() || `${Date.now()}`);
+    setSessionId(newSessionId());
     setResult(null);
     setError("");
   }
@@ -125,19 +129,11 @@ export default function VerifyPage() {
           <p className="text-sm text-zinc-500">Session {sessionId ? sessionId.slice(0, 8) : "pending"}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={cameraActive ? stopCamera : startCamera}
-            className="inline-flex h-10 items-center gap-2 rounded-md bg-zinc-950 px-3 text-sm font-medium text-white transition hover:bg-zinc-800"
-          >
+          <button type="button" onClick={cameraActive ? stopCamera : startCamera} className="inline-flex h-10 items-center gap-2 rounded-md bg-zinc-950 px-3 text-sm font-medium text-white transition hover:bg-zinc-800">
             {cameraActive ? <Square size={16} aria-hidden="true" /> : <Camera size={16} aria-hidden="true" />}
             {cameraActive ? "Stop" : "Start"}
           </button>
-          <button
-            type="button"
-            onClick={resetSession}
-            className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50"
-          >
+          <button type="button" onClick={resetSession} className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50">
             <RotateCcw size={16} aria-hidden="true" />
             Reset
           </button>
@@ -150,15 +146,9 @@ export default function VerifyPage() {
         <div className="overflow-hidden rounded-lg border border-zinc-200 bg-zinc-950">
           <div className="relative aspect-video min-h-80">
             <video ref={videoRef} autoPlay playsInline muted className="h-full w-full scale-x-[-1] object-cover" />
-            {!cameraActive ? (
-              <div className="absolute inset-0 flex items-center justify-center bg-zinc-950 text-sm font-medium text-zinc-300">
-                Camera offline
-              </div>
-            ) : null}
+            {!cameraActive ? <div className="absolute inset-0 flex items-center justify-center bg-zinc-950 text-sm font-medium text-zinc-300">Camera offline</div> : null}
             <div className="absolute left-4 top-4">
-              <span className={`inline-flex items-center rounded-md border px-3 py-1 text-xs font-semibold ${stageClass(result?.stage)}`}>
-                {result?.stage || "FACE"}
-              </span>
+              <span className={`inline-flex items-center rounded-md border px-3 py-1 text-xs font-semibold ${stageClass(result?.stage)}`}>{result?.stage || "FACE"}</span>
             </div>
             {result?.stage === "SUCCESS" || result?.stage === "RETRY" || result?.stage === "BLOCKED" ? (
               <div className="absolute inset-x-4 bottom-4 rounded-lg border border-white/20 bg-white/95 p-4 shadow-sm">
@@ -177,22 +167,10 @@ export default function VerifyPage() {
               <div className="h-full rounded-md bg-zinc-950 transition-all" style={{ width: `${progress}%` }} />
             </div>
             <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-              <div>
-                <p className="text-zinc-500">Person</p>
-                <p className="mt-1 font-medium text-zinc-950">{result?.person_name || "-"}</p>
-              </div>
-              <div>
-                <p className="text-zinc-500">Attempt</p>
-                <p className="mt-1 font-medium text-zinc-950">{result?.attempt ?? 0}</p>
-              </div>
-              <div>
-                <p className="text-zinc-500">Face</p>
-                <p className="mt-1 font-medium text-zinc-950">{formatPercent(result?.face_confidence)}</p>
-              </div>
-              <div>
-                <p className="text-zinc-500">Behavior</p>
-                <p className="mt-1 font-medium text-zinc-950">{formatPercent(result?.behavior_confidence)}</p>
-              </div>
+              <div><p className="text-zinc-500">Person</p><p className="mt-1 font-medium text-zinc-950">{result?.person_name || "-"}</p></div>
+              <div><p className="text-zinc-500">Attempt</p><p className="mt-1 font-medium text-zinc-950">{result?.attempt ?? 0}</p></div>
+              <div><p className="text-zinc-500">Face</p><p className="mt-1 font-medium text-zinc-950">{formatPercent(result?.face_confidence)}</p></div>
+              <div><p className="text-zinc-500">Behavior</p><p className="mt-1 font-medium text-zinc-950">{formatPercent(result?.behavior_confidence)}</p></div>
             </div>
           </section>
 

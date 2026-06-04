@@ -8,13 +8,7 @@ import { formatDateTime, isTruthy } from "@/lib/format";
 function PersonStatus({ blocked }: { blocked: boolean | number }) {
   const isBlocked = isTruthy(blocked);
   return (
-    <span
-      className={`inline-flex min-w-20 items-center justify-center rounded-md border px-2 py-1 text-xs font-semibold ${
-        isBlocked
-          ? "border-amber-200 bg-amber-50 text-amber-700"
-          : "border-emerald-200 bg-emerald-50 text-emerald-700"
-      }`}
-    >
+    <span className={`inline-flex min-w-20 items-center justify-center rounded-md border px-2 py-1 text-xs font-semibold ${isBlocked ? "border-amber-200 bg-amber-50 text-amber-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
       {isBlocked ? "BLOCKED" : "ACTIVE"}
     </span>
   );
@@ -81,12 +75,7 @@ export default function PersonManagement() {
             <Users size={16} aria-hidden="true" />
             Active {persons.filter((person) => !isTruthy(person.blocked)).length}
           </div>
-          <button
-            type="button"
-            disabled={busyName === "__train__"}
-            onClick={runTraining}
-            className="inline-flex h-10 items-center gap-2 rounded-md bg-zinc-950 px-3 text-sm font-medium text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
-          >
+          <button type="button" disabled={busyName === "__train__"} onClick={runTraining} className="inline-flex h-10 items-center gap-2 rounded-md bg-zinc-950 px-3 text-sm font-medium text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50">
             <RefreshCw size={16} aria-hidden="true" />
             Train
           </button>
@@ -116,35 +105,18 @@ export default function PersonManagement() {
                   <td className="px-4 py-3 text-zinc-600">{formatDateTime(person.registered_at)}</td>
                   <td className="px-4 py-3 text-zinc-600">{person.total_attendances || 0}</td>
                   <td className="px-4 py-3 text-zinc-600">{person.proxy_count || 0}</td>
-                  <td className="px-4 py-3">
-                    <PersonStatus blocked={person.blocked} />
-                  </td>
+                  <td className="px-4 py-3"><PersonStatus blocked={person.blocked} /></td>
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        disabled={busyName === person.name}
-                        onClick={() => runPersonAction(person.name, () => reenablePerson(person.name))}
-                        className="inline-flex h-9 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
+                      <button type="button" disabled={busyName === person.name} onClick={() => runPersonAction(person.name, () => reenablePerson(person.name))} className="inline-flex h-9 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50">
                         <RotateCcw size={15} aria-hidden="true" />
                         Re-enable
                       </button>
-                      <button
-                        type="button"
-                        disabled={busyName === person.name}
-                        onClick={() => runPersonAction(person.name, () => blockPerson(person.name))}
-                        className="inline-flex h-9 items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 text-sm font-medium text-amber-700 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
+                      <button type="button" disabled={busyName === person.name} onClick={() => runPersonAction(person.name, () => blockPerson(person.name))} className="inline-flex h-9 items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 text-sm font-medium text-amber-700 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50">
                         <LockKeyhole size={15} aria-hidden="true" />
                         Block
                       </button>
-                      <button
-                        type="button"
-                        disabled={busyName === person.name}
-                        onClick={() => runPersonAction(person.name, () => unblockPerson(person.name))}
-                        className="inline-flex h-9 items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 text-sm font-medium text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
+                      <button type="button" disabled={busyName === person.name} onClick={() => runPersonAction(person.name, () => unblockPerson(person.name))} className="inline-flex h-9 items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 text-sm font-medium text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50">
                         <UnlockKeyhole size={15} aria-hidden="true" />
                         Unblock
                       </button>
@@ -154,9 +126,7 @@ export default function PersonManagement() {
               ))}
               {persons.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-sm text-zinc-500">
-                    No registered persons found
-                  </td>
+                  <td colSpan={6} className="px-4 py-10 text-center text-sm text-zinc-500">No registered persons found</td>
                 </tr>
               ) : null}
             </tbody>

@@ -54,9 +54,7 @@ export default function AttendanceHistory() {
 
   const filteredRecords = useMemo(() => {
     return records.filter((record) => {
-      const personMatches = personFilter
-        ? record.person_name.toLowerCase().includes(personFilter.toLowerCase())
-        : true;
+      const personMatches = personFilter ? record.person_name.toLowerCase().includes(personFilter.toLowerCase()) : true;
       const statusMatches = statusFilter ? (record.status || "").toUpperCase() === statusFilter : true;
       return personMatches && statusMatches;
     });
@@ -80,11 +78,7 @@ export default function AttendanceHistory() {
           <h1 className="text-2xl font-semibold tracking-normal text-zinc-950">Attendance History</h1>
           <p className="text-sm text-zinc-500">{filteredRecords.length} records</p>
         </div>
-        <button
-          type="button"
-          onClick={exportCsv}
-          className="inline-flex h-10 w-fit items-center gap-2 rounded-md bg-zinc-950 px-3 text-sm font-medium text-white transition hover:bg-zinc-800"
-        >
+        <button type="button" onClick={exportCsv} className="inline-flex h-10 w-fit items-center gap-2 rounded-md bg-zinc-950 px-3 text-sm font-medium text-white transition hover:bg-zinc-800">
           <Download size={16} aria-hidden="true" />
           Export CSV
         </button>
@@ -100,38 +94,19 @@ export default function AttendanceHistory() {
         <div className="grid gap-3 md:grid-cols-4">
           <label className="space-y-1 text-sm font-medium text-zinc-700">
             Start
-            <input
-              type="date"
-              value={start}
-              onChange={(event) => setStart(event.target.value)}
-              className="h-10 w-full rounded-md border border-zinc-300 px-3 text-sm outline-none transition focus:border-zinc-500"
-            />
+            <input type="date" value={start} onChange={(event) => setStart(event.target.value)} className="h-10 w-full rounded-md border border-zinc-300 px-3 text-sm outline-none transition focus:border-zinc-500" />
           </label>
           <label className="space-y-1 text-sm font-medium text-zinc-700">
             End
-            <input
-              type="date"
-              value={end}
-              onChange={(event) => setEnd(event.target.value)}
-              className="h-10 w-full rounded-md border border-zinc-300 px-3 text-sm outline-none transition focus:border-zinc-500"
-            />
+            <input type="date" value={end} onChange={(event) => setEnd(event.target.value)} className="h-10 w-full rounded-md border border-zinc-300 px-3 text-sm outline-none transition focus:border-zinc-500" />
           </label>
           <label className="space-y-1 text-sm font-medium text-zinc-700">
             Person
-            <input
-              value={personFilter}
-              onChange={(event) => setPersonFilter(event.target.value)}
-              className="h-10 w-full rounded-md border border-zinc-300 px-3 text-sm outline-none transition focus:border-zinc-500"
-              placeholder="Name"
-            />
+            <input value={personFilter} onChange={(event) => setPersonFilter(event.target.value)} className="h-10 w-full rounded-md border border-zinc-300 px-3 text-sm outline-none transition focus:border-zinc-500" placeholder="Name" />
           </label>
           <label className="space-y-1 text-sm font-medium text-zinc-700">
             Status
-            <select
-              value={statusFilter}
-              onChange={(event) => setStatusFilter(event.target.value)}
-              className="h-10 w-full rounded-md border border-zinc-300 px-3 text-sm outline-none transition focus:border-zinc-500"
-            >
+            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="h-10 w-full rounded-md border border-zinc-300 px-3 text-sm outline-none transition focus:border-zinc-500">
               <option value="">All</option>
               <option value="SUCCESS">SUCCESS</option>
               <option value="PROXY">PROXY</option>
@@ -165,17 +140,13 @@ export default function AttendanceHistory() {
                   <td className="px-4 py-3 text-zinc-600">{formatDateTime(record.timestamp)}</td>
                   <td className="px-4 py-3 text-zinc-600">{formatPercent(record.face_confidence)}</td>
                   <td className="px-4 py-3 text-zinc-600">{formatPercent(record.behavior_confidence)}</td>
-                  <td className="px-4 py-3">
-                    <StatusBadge status={record.status} />
-                  </td>
+                  <td className="px-4 py-3"><StatusBadge status={record.status} /></td>
                   <td className="px-4 py-3 text-zinc-600">{isTruthy(record.blink_detected) ? "Yes" : "No"}</td>
                 </tr>
               ))}
               {filteredRecords.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-sm text-zinc-500">
-                    No records found
-                  </td>
+                  <td colSpan={6} className="px-4 py-10 text-center text-sm text-zinc-500">No records found</td>
                 </tr>
               ) : null}
             </tbody>
